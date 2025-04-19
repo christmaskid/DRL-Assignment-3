@@ -129,5 +129,9 @@ class DQNAgent:
        torch.save(self.target_net.state_dict(), "target_net.pt")
 
     def load(self, q_net_path="q_net.pt", target_net_path="target_net.pt"):
-       self.q_net.load_state_dict(torch.load(q_net_path))#, weights_only=True))
-       self.target_net.load_state_dict(torch.load(target_net_path))#, weights_only=True))
+      if self.device == "cpu":
+        self.q_net.load_state_dict(torch.load(q_net_path, map_location=torch.device('cpu')))
+        self.target_net.load_state_dict(torch.load(target_net_path, map_location=torch.device('cpu')))
+      else:
+        self.q_net.load_state_dict(torch.load(q_net_path), weights_only=True)
+        self.target_net.load_state_dict(torch.load(target_net_path), weights_only=True)
