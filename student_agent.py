@@ -8,7 +8,7 @@ env = gym_super_mario_bros.make('SuperMarioBros-v0')
 env = JoypadSpace(env, COMPLEX_MOVEMENT)
 state_size = (4, 84, 84) #env.observation_space.shape[0]
 action_size = env.action_space.n
-agent = DQNAgent(state_size, action_size)
+agent = DQNAgent(state_size, action_size, device="cpu")
 agent.load("q_net.pt", "target_net.pt")
 
 # Do not modify the input of the 'act' function and the '__init__' function. 
