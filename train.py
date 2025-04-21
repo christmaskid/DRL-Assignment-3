@@ -28,13 +28,15 @@ print("action size: ", action_size)
 state_size = (4, 84, 84) #env.observation_space.shape[0]
 print("state size: ", state_size)
 
-agent = DQNAgent(state_size, action_size)
+agent = DQNAgent(state_size, action_size, batch_size=32, gamma=0.99, soft_tau=0.1, update_interval=10)
 # TODO: Determine the number of episodes for training
 num_episodes = 40000
 
 reward_history = [] # Store the total rewards for each episode
 epsilon = 0.9
-n_skip = 4
+decay_rate = 0.99999975
+min_epsilon = 0.1
+n_skip = state_size[0]
 
 for episode in tqdm(range(num_episodes)):
     # TODO: Reset the environment
@@ -42,6 +44,9 @@ for episode in tqdm(range(num_episodes)):
     total_reward = 0
     done = False
     step = 0
+    # state_stack = [obs] * n_skip
+
+    print()
 
     while not done:
         if random.random() < epsilon: # Exploration
@@ -50,12 +55,14 @@ for episode in tqdm(range(num_episodes)):
           action = agent.get_action(obs, deterministic=True)
 
         reward = 0
-        state_stack = []
+        # prev_states = np.stack(state_stack)
+        # state_stack = []
         for i in range(n_skip):
             next_obs, reward_, done, info = env.step(action)
             if done: break
             reward += reward_
-            state_stack.append(next_obs)
+            # state_stack.append(next_obs)
+        # agent.replay_buffer.add((prev_states, action, reward, np.stack(state_stack), done))
         agent.replay_buffer.add((obs, action, reward, next_obs, done))
         agent.train()
 
@@ -63,11 +70,12 @@ for episode in tqdm(range(num_episodes)):
         obs = next_obs
         total_reward += reward
         step += 1
+        print(f"\rStep: {step}, Reward: {total_reward}   ", end="", flush=True)
     
-    epsilon = max(epsilon*0.99, 0.01)
+    epsilon = max(epsilon*decay_rate, min_epsilon)
     agent.save()
 
-    print(f"Episode {episode}, Reward: {total_reward}, Step: {step}", flush=True)
+    print(f"\rEpisode {episode}, Reward: {total_reward}, Step: {step}", flush=True)
     reward_history.append(total_reward)
 
     if (episode+1)%10 == 0:
