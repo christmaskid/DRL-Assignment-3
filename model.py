@@ -4,6 +4,7 @@ import numpy as np
 import torchvision.transforms as transforms
 import random
 from collections import deque
+import matplotlib.pyplot as plt
 
 class QNet(torch.nn.Module):
     def __init__(self, img_channel, img_size, n_actions):
@@ -32,110 +33,115 @@ class QNet(torch.nn.Module):
         x = self.fc(x)
         return x
 
-    
+
 class ReplayBuffer:
-    def __init__(self, capacity):
-      # TODO: Initialize the buffer
-      self.buffer = deque(maxlen=capacity)
-
-    # TODO: Implement the add method
-    def add(self, item):
-      self.buffer.append(item)
-
-    # TODO: Implement the sample method
-    def sample(self, n_item):
-      return random.sample(self.buffer, n_item)
-
-class DQNAgent:
-    def __init__(self, state_size, action_size, device="cuda", lr=0.001,
-                 batch_size=32, gamma=0.99, soft_tau=0.01, update_interval=1,
-                 q_net_save_path="q_net.pt", target_net_save_path="target_net.pt"):
-
-        self.state_size = state_size
-        self.action_size = action_size
+    def __init__(self, capacity, state_shape, device="cpu"):
+        self.capacity = capacity
+        self.ptr = 0
+        self.size = 0
+        self.states      = np.empty((capacity, *state_shape, 1), dtype=np.uint8)
+        self.next_states = np.empty((capacity, *state_shape, 1), dtype=np.uint8)
+        self.actions  = np.empty(capacity, dtype=np.int16)
+        self.rewards  = np.empty(capacity, dtype=np.float32)
+        self.dones    = np.empty(capacity, dtype=np.bool_)
         self.device = device
 
-        img_channels = 1 # due to grayscale
-        self.n_skip = state_size[0]
-        self.img_size = state_size[1:]
-        self.q_net = QNet(img_channels, self.img_size, action_size).to(self.device)
-        self.target_net = QNet(img_channels, self.img_size, action_size).to(self.device)
+    def add(self, state, action, reward, next_state, done):
+        self.states[self.ptr] = np.array(state)
+        self.next_states[self.ptr] = np.array(next_state)
+        self.actions[self.ptr] = action
+        self.rewards[self.ptr] = reward
+        self.dones[self.ptr] = done
+        self.ptr = (self.ptr + 1) % self.capacity # circular queue
+        self.size = min(self.size + 1, self.capacity)
 
-        for p in self.target_net.parameters():
-            p.requires_grad = False
+    def sample(self, batch):
+        idx = np.random.randint(0, self.size, size=batch)
+        return (
+            torch.tensor(self.states[idx], dtype=torch.float32, device=self.device).squeeze(-1) / 255.0,
+            torch.tensor(self.actions[idx], dtype=torch.int64, device=self.device).unsqueeze(-1),
+            torch.tensor(self.rewards[idx], dtype=torch.float32, device=self.device).unsqueeze(-1),
+            torch.tensor(self.next_states[idx], dtype=torch.float32, device=self.device).squeeze(-1) / 255.0,
+            torch.tensor(self.dones[idx], dtype=torch.int64, device=self.device).unsqueeze(-1),
+        )
 
-        self.loss_func = torch.nn.MSELoss()
+class DQNAgent:
+    def __init__(self, state_size, action_size, n_skip=4, device="cuda", lr=0.00025,
+                 batch_size=32, gamma=0.99, soft_tau=0.01, update_interval=3, 
+                 buffer_size=1e5, min_training_buffer=1e4,
+                 q_net_save_path="q_net.pt", target_net_save_path="target_net.pt"):
+
+        self.state_size = state_size # (n_stack, img_width, img_height)
+        self.action_size = action_size # output classes number
+        self.device = device
+
+        self.n_skip = n_skip # skip frames
+        self.n_stack = state_size[0] # stack frames
+        self.img_sizes = state_size[1:]
+        self.q_net = QNet(self.n_stack, self.img_sizes, action_size).to(self.device)
+        self.target_net = QNet(self.n_stack, self.img_sizes, action_size).to(self.device)
+
+        self.loss_func = torch.nn.SmoothL1Loss() #MSELoss()
         self.optimizer = torch.optim.Adam(self.q_net.parameters(), lr=lr)
 
         self.batch_size = batch_size
         self.gamma = gamma
         self.soft_tau = soft_tau
+        self.min_training_buffer = min_training_buffer 
         self.update_interval = update_interval
+        self.sync_interval = 1e4
+        self.buffer_size = int(buffer_size)
+        
+        self.replay_buffer = ReplayBuffer(self.buffer_size, self.state_size, self.device)
+
         self.q_net_save_path = q_net_save_path
         self.target_net_save_path = target_net_save_path
-        
-        self.replay_buffer = ReplayBuffer(capacity=10000)
-        self.step = 0
-        self.frame_stack = []
 
-    def wrap_inputs(self, state):
-        # State should be a stack of frames, with each sized (240, 256, 3)
-        # i.e. (B, 240, 256, 3)
-        data_transforms = transforms.Compose([
-           transforms.Grayscale(),
-           transforms.Resize(self.img_size),
-           transforms.Normalize(0, 255),
-        ])
-        state_tensor = torch.tensor(state.copy().astype(np.float32)).permute(0,3,1,2)  # -> (B, 3, 240, 256)
-        state_tensor = data_transforms(state_tensor).to(self.device)
-        return state_tensor
 
     def get_action(self, state, deterministic=True):
-        state = self.wrap_inputs(state[None, ...]).to(self.device)
+        state = torch.tensor(state, dtype=torch.float32).squeeze(-1).unsqueeze(0).to(self.device) / 255.0
+        # (4, 84, 84, 1) -> (1, 4, 84, 84)
         if deterministic:
+            # print(self.q_net(state), flush=True)
             with torch.no_grad():
                 return torch.argmax(self.q_net(state)).item()
         else:
             return random.choice(list(range(self.action_size)))
 
     def update(self, target, learning):
-        # TODO: Implement hard update or soft update
         for target_param, param in zip(target.parameters(), learning.parameters()):
-          # target_param.data.copy_(param.data) # Hard update
           target_param.data.copy_(target_param.data * (1.0 - self.soft_tau) + param.data * self.soft_tau) # Soft update
 
     def train(self):
-        # TODO: Sample a batch from the replay buffer
-        if len(self.replay_buffer.buffer) < self.batch_size:
+        if self.replay_buffer.size < self.min_training_buffer:
           return
-        batch = self.replay_buffer.sample(self.batch_size)
-        batched_state, batched_action, batched_reward, batched_next_state, batched_done = zip(*batch)
         
-        batched_state = self.wrap_inputs(np.concatenate(batched_state, axis=0))
-        # batched_state = self.wrap_inputs(np.stack(batched_state, axis=0))
-        batched_action = torch.tensor(batched_action, dtype=torch.int64).unsqueeze(1).to(self.device).repeat(self.n_skip, 1)
-        batched_reward = torch.tensor(batched_reward, dtype=torch.float32).unsqueeze(1).to(self.device).repeat(self.n_skip, 1)
-        batched_next_state = self.wrap_inputs(np.concatenate(batched_next_state, axis=0))
-        # batched_next_state = self.wrap_inputs(np.stack(batched_next_state, axis=0))
-        batched_done = torch.tensor(batched_done, dtype=torch.float32).unsqueeze(1).to(self.device).repeat(self.n_skip, 1)
-
-        # TODO: Compute loss and update the model
+        batch = self.replay_buffer.sample(self.batch_size)
+        batched_states, batched_action, batched_reward, batched_next_states, batched_done = batch # zip(*batch)
+        # print(f"batched_states: {batched_states.shape}, batched_action: {batched_action.shape}, batched_reward: {batched_reward.shape}, batched_next_states: {batched_next_states.shape}, batched_done: {batched_done.shape}")
+        # print("batched_action values: ", batched_action)
+        
         # training target y_i: r_t  + \gamma max_{a}{Q_{target_net}(s_{t+1}, a)}
-        outputs = self.target_net(batched_next_state)
+        outputs = self.target_net(batched_next_states).detach()
         batched_y = batched_reward + (1 - batched_done) * self.gamma * torch.max(outputs, dim=1)[0].unsqueeze(1) # (B, 1) + ((B, 4))
 
-        # theta -= \alpha * 1/N * \sum_{i}^{N} {\nebla{q_net(s_i)[a_i](y_i - q_net(s_i)[a_i])}}
-        batched_q = self.q_net(batched_state).gather(1, batched_action)
+        ## DOUBLE DQN
+        # next_actions = self.q_net(batched_next_states).argmax(dim=1, keepdim=True)
+        # next_q_values = self.target_net(batched_next_states).gather(1, next_actions)
+        # batched_y = batched_reward + (1 - batched_done) * self.gamma * next_q_values
 
+        # theta -= \alpha * 1/N * \sum_{i}^{N} {\nebla{q_net(s_i)[a_i](y_i - q_net(s_i)[a_i])}}
+        batched_q = self.q_net(batched_states).gather(1, batched_action)
+
+        # print("batched_q: ", batched_q, flush=True)
+        # print("batched_y: ", batched_y, flush=True)
         self.optimizer.zero_grad()
         loss = self.loss_func(batched_q, batched_y)
+        # print("loss: ", loss.item(), flush=True)
         loss.backward()
+        # torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), 10)
         self.optimizer.step()
-
-        # TODO: Update target network periodically
-        self.step += 1
-        if self.step % 3 == 0:
-          self.update(self.target_net, self.q_net)
+        # print("updated batched_q: ", self.q_net(batched_states).gather(1, batched_action), flush=True)
 
 
     def save(self):
@@ -147,5 +153,5 @@ class DQNAgent:
         self.q_net.load_state_dict(torch.load(q_net_path, map_location=torch.device('cpu')))
         self.target_net.load_state_dict(torch.load(target_net_path, map_location=torch.device('cpu')))
       else:
-        self.q_net.load_state_dict(torch.load(q_net_path), weights_only=True)
-        self.target_net.load_state_dict(torch.load(target_net_path), weights_only=True)
+        self.q_net.load_state_dict(torch.load(q_net_path, weights_only=True))
+        self.target_net.load_state_dict(torch.load(target_net_path, weights_only=True))
