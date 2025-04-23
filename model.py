@@ -4,7 +4,7 @@ import numpy as np
 import torchvision.transforms as transforms
 import random
 from collections import deque
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 class QNet(torch.nn.Module):
     def __init__(self, img_channel, img_size, n_actions):
