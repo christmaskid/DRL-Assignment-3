@@ -17,7 +17,10 @@ print("action size: ", action_size)
 
 agent = DQNAgent(state_size, action_size, n_skip, batch_size=32, 
                  gamma=0.99, soft_tau=0.1, update_interval=32, device="cpu")
-agent.load("q_net_debug.pt", "target_net_debug.pt")
+agent.load("q_net_debug_1e-5_32_new.pt", "target_net_debug_1e-5_32_new.pt")
+# agent.load("q_net__2e-5_32.pt", "target_net__2e-5_32.pt")
+agent.q_net.eval()
+agent.target_net.eval()
 
 # Do not modify the input of the 'act' function and the '__init__' function. 
 frames= []

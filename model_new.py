@@ -6,23 +6,34 @@ import random
 from collections import deque
 # import matplotlib.pyplot as plt
 
+from torchrl.data import ReplayBuffer, LazyTensorStorage
+from torchrl.data.replay_buffers.samplers import PrioritizedSampler
+from tensordict import TensorDict
+
 class QNet(torch.nn.Module):
     def __init__(self, img_channel, img_size, n_actions):
         super(QNet, self).__init__()
         # TODO: Define the neural network
         # Reference: https://pytorch.org/tutorials/intermediate/mario_rl_tutorial.html
         self.cnn = nn.Sequential(
-            nn.Conv2d(in_channels=img_channel, out_channels=32, kernel_size=8, stride=4),
+            nn.Conv2d(in_channels=img_channel, out_channels=32, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2),
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1),
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
         )
         self.flatten = nn.Flatten()
-        img_size_div_prod = (img_size[0] // 12) * (img_size[1] // 12) # ? 84 -> 7
+        img_size_div_prod = 1
+        img_size_copy = [img_size[0], img_size[1]]
+        for _ in range(4): # n_layer
+          img_size_copy[0] = (img_size_copy[0]+1)//2
+          img_size_copy[1] = (img_size_copy[1]+1)//2
+        img_size_div_prod = img_size_copy[0] * img_size_copy[1]
         self.fc = nn.Sequential(
-            nn.Linear(64 * (img_size_div_prod), 512), # 3136
+            nn.Linear(128 * (img_size_div_prod), 512),
             nn.ReLU(),
             nn.Linear(512, n_actions),
         )
@@ -35,34 +46,44 @@ class QNet(torch.nn.Module):
 
 
 class ReplayBuffer:
+    # Circular queue implementation
     def __init__(self, capacity, state_shape, device="cpu"):
         self.capacity = capacity
         self.ptr = 0
         self.size = 0
-        self.states      = np.empty((capacity, *state_shape, 1), dtype=np.uint8)
-        self.next_states = np.empty((capacity, *state_shape, 1), dtype=np.uint8)
-        self.actions  = np.empty(capacity, dtype=np.int16)
-        self.rewards  = np.empty(capacity, dtype=np.float32)
-        self.dones    = np.empty(capacity, dtype=np.bool_)
+        self.states      = torch.empty((capacity, *state_shape), dtype=torch.uint8)
+        self.next_states = torch.empty((capacity, *state_shape), dtype=torch.uint8)
+        self.actions  = torch.empty(capacity, dtype=torch.int64) # discrete; lower precision to save space
+        self.rewards  = torch.empty(capacity, dtype=torch.float32)
+        self.dones    = torch.empty(capacity, dtype=torch.int64)
         self.device = device
 
     def add(self, state, action, reward, next_state, done):
-        self.states[self.ptr] = np.array(state)
-        self.next_states[self.ptr] = np.array(next_state)
-        self.actions[self.ptr] = action
-        self.rewards[self.ptr] = reward
-        self.dones[self.ptr] = done
+        state = np.array(state)[..., 0] # (4, 84, 84, 1) -> (4, 84, 84)
+        next_state = np.array(next_state)[..., 0] # (4, 84, 84, 1) -> (4, 84, 84)
+        
+        self.states[self.ptr] = torch.tensor(state, device=self.device)
+        self.actions[self.ptr] = torch.tensor([action], device=self.device)
+        self.rewards[self.ptr] = torch.tensor([reward], device=self.device)
+        self.next_states[self.ptr] = torch.tensor(next_state, device=self.device)
+        self.dones[self.ptr] = torch.tensor([done], device=self.device)
+
         self.ptr = (self.ptr + 1) % self.capacity # circular queue
         self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch):
         idx = np.random.randint(0, self.size, size=batch)
         return (
-            torch.tensor(self.states[idx], dtype=torch.float32, device=self.device).squeeze(-1) / 255.0,
-            torch.tensor(self.actions[idx], dtype=torch.int64, device=self.device).unsqueeze(-1),
-            torch.tensor(self.rewards[idx], dtype=torch.float32, device=self.device).unsqueeze(-1),
-            torch.tensor(self.next_states[idx], dtype=torch.float32, device=self.device).squeeze(-1) / 255.0,
-            torch.tensor(self.dones[idx], dtype=torch.int64, device=self.device).unsqueeze(-1),
+            # torch.tensor(self.states[idx], dtype=torch.float32, device=self.device).squeeze(-1) / 255.0,
+            # torch.tensor(self.actions[idx], dtype=torch.int64, device=self.device).unsqueeze(-1),
+            # torch.tensor(self.rewards[idx], dtype=torch.float32, device=self.device).unsqueeze(-1),
+            # torch.tensor(self.next_states[idx], dtype=torch.float32, device=self.device).squeeze(-1) / 255.0,
+            # torch.tensor(self.dones[idx], dtype=torch.int64, device=self.device).unsqueeze(-1),
+            self.states[idx].to(self.device) / 255.0,
+            self.actions[idx].to(self.device).unsqueeze(-1),
+            self.rewards[idx].to(self.device).unsqueeze(-1),
+            self.next_states[idx].to(self.device) / 255.0,
+            self.dones[idx].to(self.device).unsqueeze(-1),
         )
 
 class DQNAgent:
@@ -89,7 +110,6 @@ class DQNAgent:
         self.soft_tau = soft_tau
         self.min_training_buffer = min_training_buffer 
         self.update_interval = update_interval
-        self.sync_interval = 1e4
         self.buffer_size = int(buffer_size)
         
         self.replay_buffer = ReplayBuffer(self.buffer_size, self.state_size, self.device)
@@ -99,7 +119,7 @@ class DQNAgent:
 
 
     def get_action(self, state, deterministic=True):
-        state = torch.tensor(np.array(state), dtype=torch.float32).squeeze(-1).unsqueeze(0).to(self.device) / 255.0
+        state = torch.tensor(state, dtype=torch.float32).squeeze(-1).unsqueeze(0).to(self.device) / 255.0
         # (4, 84, 84, 1) -> (1, 4, 84, 84)
         if deterministic:
             # print(self.q_net(state), flush=True)
@@ -122,13 +142,13 @@ class DQNAgent:
         # print("batched_action values: ", batched_action)
         
         # training target y_i: r_t  + \gamma max_{a}{Q_{target_net}(s_{t+1}, a)}
-        outputs = self.target_net(batched_next_states).detach()
-        batched_y = batched_reward + (1 - batched_done) * self.gamma * torch.max(outputs, dim=1)[0].unsqueeze(1) # (B, 1) + ((B, 4))
+        # outputs = self.target_net(batched_next_states).detach()
+        # batched_y = batched_reward + (1 - batched_done) * self.gamma * torch.max(outputs, dim=1)[0].unsqueeze(1) # (B, 1) + ((B, 4))
 
         ## DOUBLE DQN
-        # next_actions = self.q_net(batched_next_states).argmax(dim=1, keepdim=True)
-        # next_q_values = self.target_net(batched_next_states).gather(1, next_actions)
-        # batched_y = batched_reward + (1 - batched_done) * self.gamma * next_q_values
+        next_actions = self.q_net(batched_next_states).argmax(dim=1, keepdim=True)
+        next_q_values = self.target_net(batched_next_states).gather(1, next_actions).detach()
+        batched_y = batched_reward + (1 - batched_done) * self.gamma * next_q_values
 
         # theta -= \alpha * 1/N * \sum_{i}^{N} {\nebla{q_net(s_i)[a_i](y_i - q_net(s_i)[a_i])}}
         batched_q = self.q_net(batched_states).gather(1, batched_action)

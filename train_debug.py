@@ -6,7 +6,7 @@ from gym_super_mario_bros.actions import COMPLEX_MOVEMENT, RIGHT_ONLY
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import random
-from model_new import DQNAgent
+from model import DQNAgent
 import torch
 import numpy as np
 
@@ -25,7 +25,7 @@ class SkipFrame(gym.Wrapper):
 
 
 def train(env, agent, num_episodes, start_episode=0, update_interval=32, epsilon = 0.9, 
-          decay_rate = 0.99999975, min_epsilon = 0.1, plot_name="train_debug.png"):
+          decay_rate = 0.99999975, min_epsilon = 0.1):
   
   reward_history = [] # Store the total rewards for each episode
   for episode in tqdm(range(start_episode, num_episodes)):
@@ -66,7 +66,7 @@ def train(env, agent, num_episodes, start_episode=0, update_interval=32, epsilon
           total_reward += reward
           obs = next_obs
           step += 1
-          # print(f"\rStep: {step}, Reward: {total_reward}   ", end="", flush=True)
+          print(f"\rStep: {step}, Reward: {total_reward}   ", end="", flush=True)
       
       epsilon = max(epsilon*decay_rate, min_epsilon)
 
@@ -74,7 +74,7 @@ def train(env, agent, num_episodes, start_episode=0, update_interval=32, epsilon
         agent.target_net.load_state_dict(agent.q_net.state_dict()) # Hard update
         agent.save()
 
-      print(f"Episode {episode}, Reward: {total_reward}, Step: {step}, Epsilon: {epsilon:.2f}", flush=True)
+      print(f"\rEpisode {episode}, Reward: {total_reward}, Step: {step}, Epsilon: {epsilon:.2f}", flush=True)
       reward_history.append(total_reward)
 
       if (episode+1)%10 == 0:
@@ -84,7 +84,7 @@ def train(env, agent, num_episodes, start_episode=0, update_interval=32, epsilon
         plt.xlabel("Episode")
         plt.ylabel("Total Reward")
         plt.title("Training Progress")
-        plt.savefig(plot_name)
+        plt.savefig("train_debug_1e-4_32_new.png")
         plt.close()
 
       # for i in range(n_stack):
@@ -96,7 +96,7 @@ def train(env, agent, num_episodes, start_episode=0, update_interval=32, epsilon
 
 env = gym_super_mario_bros.make("SuperMarioBros-v0")
 env = JoypadSpace(env, COMPLEX_MOVEMENT)
-n_skip, n_stack = 16, 8
+n_skip, n_stack = 8, 4
 img_size = 84
 env = SkipFrame(env, skip=n_skip)
 env = GrayScaleObservation(env)
@@ -108,11 +108,39 @@ print("state_size", state_size) # (4, 84, 84)
 action_size = env.action_space.n
 print("action size: ", action_size)
 
-postfix = "_2e-5_32_16-8_new-model"
-agent = DQNAgent(state_size, action_size, n_skip, batch_size=32, 
-                 gamma=0.99, soft_tau=0.1, update_interval=32, lr=2e-5,
-                 buffer_size=1e5, min_training_buffer=1e4,
-                 q_net_save_path=f"q_net_{postfix}.pt", target_net_save_path=f"target_net_{postfix}.pt")
+""" 1
+agent = DQNAgent(state_size, action_size, n_skip, batch_size=1024, 
+                 gamma=0.99, soft_tau=0.1, update_interval=32, lr=1e-5,
+                 buffer_size=1e5, min_training_buffer=1e3,
+                 q_net_save_path="q_net_debug.pt", target_net_save_path="target_net_debug.pt")
+agent.load("q_net_debug.pt", "target_net_debug.pt")
+train(env, agent,  start_episode=2709, num_episodes=40000, epsilon = 0.9 * (0.999 ** 2709),
+      decay_rate=0.999, min_epsilon=0.01,)
+"""
 
-train(env, agent, start_episode=0, epsilon=0.9, num_episodes=40000, decay_rate=0.99975, min_epsilon=0.01,
-      plot_name=f"train_net_{postfix}.png")
+""" 2, 3
+agent = DQNAgent(state_size, action_size, n_skip, batch_size=32, 
+                 gamma=0.99, soft_tau=0.1, update_interval=32, lr=1e-3,
+                 buffer_size=1e4, min_training_buffer=1e2,
+                 q_net_save_path="q_net_debug_1e-3_32.pt", target_net_save_path="target_net_debug_1e-3_32.pt")
+# agent.load("q_net_8-4_099.pt", "target_net_8-4_099.pt")
+train(env, agent, num_episodes=40000, decay_rate=0.99, min_epsilon=0.01)
+"""
+
+# """ 4
+agent = DQNAgent(state_size, action_size, n_skip, batch_size=32, 
+                 gamma=0.99, soft_tau=0.1, update_interval=32, lr=1e-5,
+                 buffer_size=1e5, min_training_buffer=1e4,
+                 q_net_save_path="q_net_debug_1e-5_32_new.pt", target_net_save_path="target_net_debug_1e-5_32_new.pt")
+agent.load("q_net_debug_1e-5_32_new.pt", "target_net_debug_1e-5_32_new.pt")
+train(env, agent, start_episode=1553, epsilon=0.9*(0.999975**1552), num_episodes=40000, decay_rate=0.999975, min_epsilon=0.01)
+# """
+
+""" 5
+agent = DQNAgent(state_size, action_size, n_skip, batch_size=32, 
+                 gamma=0.99, soft_tau=0.1, update_interval=32, lr=1e-5,
+                 buffer_size=1e5, min_training_buffer=1e4,
+                 q_net_save_path="q_net_debug_1e-4_32_new.pt", target_net_save_path="target_net_debug_1e-4_32_new.pt")
+# agent.load("q_net_8-4_099.pt", "target_net_8-4_099.pt")
+train(env, agent, num_episodes=40000, decay_rate=0.999975, min_epsilon=0.01)
+"""
