@@ -37,7 +37,7 @@ class Agent(object):
         self.repeat = 0 #n_skip-1
         self.last_action = 0
 
-        self.agent = DQNAgent(state_size=state_size, action_size=action_size)
+        self.agent = DQNAgent(state_size=state_size, action_size=action_size, device="cpu")
         self.agent.load(load_dir="new7", ckpt_name="ckpt.pt")
         self.agent.q_net.eval()
 
