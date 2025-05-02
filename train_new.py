@@ -9,18 +9,30 @@ from torchrl.data import TensorDictReplayBuffer, LazyMemmapStorage
 
 import torch
 import torch.nn as nn
+from torchvision import transforms as T
 import numpy as np
 import os
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 # Ref.: https://pytorch.org/tutorials/intermediate/mario_rl_tutorial.html
-class SkipFrameObservation(gym.Wrapper):
+class NormalizeObservation(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+
+    def observation(self, obs):
+        # obs = torch.tensor(obs.copy()[None,...], dtype=torch.float)
+        # transforms = T.Normalize(0, 255)
+        # obs = transforms(obs).squeeze(0)
+        obs = torch.tensor(obs.copy(), dtype=torch.float32) / 255.0
+        return obs
+
+class SkipFrame(gym.Wrapper):
     def __init__(self, env, n_skip=4):
         super().__init__(env)
         self.env = env
         self.n_skip = n_skip
-    
+
     def step(self, action):
         total_reward = 0
         for _ in range(self.n_skip):
@@ -58,7 +70,12 @@ class QNet(nn.Module):
         return x
 
 class DQNAgent:
-    def __init__(self, state_size, action_size, device="cuda", save_dir="tmp"):
+    def __init__(self, state_size, action_size, device="cuda", save_dir="tmp",
+                gamma=0.99, batch_size=32, buffer_capacity=100000, 
+                learning_rate=2.5e-4, warmup_steps=32,
+                epsilon=1, epsilon_decay_rate=0.99999975, epsilon_min=0.001,
+                sync_interval=10000, learn_interval=1, is_doubleDQN=True):
+
         self.state_size = state_size
         self.action_size = action_size
         self.device = device
@@ -66,16 +83,27 @@ class DQNAgent:
         if not os.path.exists(self.save_dir):
             os.mkdir(self.save_dir)
 
-        self.batch_size = 32
-        self.capacity = 100000
-        self.save_interval = 1
-        self.gamma = 0.99
-        self.learning_rate = 2.5e-4
-        self.sync_interval = 10000
-        self.learn_interval = 1
-        
+        self.batch_size = batch_size
+        self.capacity = buffer_capacity
+        self.gamma = gamma
+        self.learning_rate = learning_rate
+        self.sync_interval = sync_interval
+        self.learn_interval = learn_interval
+        self.is_doubleDQN = is_doubleDQN
+        self.warmup_steps = warmup_steps
+
+        self.epsilon = epsilon
+        self.epsilon_decay_rate = epsilon_decay_rate
+        self.epsilon_min = epsilon_min
+
         self.q_net = QNet(state_size[0], state_size[1:], action_size).to(self.device)
         self.target_net = QNet(state_size[0], state_size[1:], action_size).to(self.device)
+        self.target_net.load_state_dict(self.q_net.state_dict()) # bug found! must sync at the start
+        self.target_net.eval()
+        for p in self.target_net.parameters():
+            p.requires_grad = False
+
+
         self.replay_buffer = TensorDictReplayBuffer(
             storage=LazyMemmapStorage(self.capacity, device=torch.device("cpu"))
         )
@@ -93,28 +121,32 @@ class DQNAgent:
         done = torch.tensor(done).unsqueeze(-1)
 
         self.replay_buffer.add(TensorDict({
-            "state": state, "action": action, "reward": reward, 
+            "state": state, "action": action, "reward": reward,
             "next_state": next_state, "done": done
         }, batch_size = []))
-    
 
-    def get_action(self, state, deterministic=True):
-        if deterministic:
-            state = torch.tensor(np.array(state), dtype=torch.float32).squeeze(-1).unsqueeze(0).to(self.device)
-            values = self.q_net(state)
-            action = torch.argmax(values, axis=1).item()
+
+    def get_action(self, state, sample=True, logging=False):
+        if sample and np.random.random() < self.epsilon:
+            action = np.random.randint(self.action_size)
         else:
-            action = np.random.choice(np.arange(self.action_size))
-        
+            state = torch.tensor(np.array(state), dtype=torch.float32).squeeze(-1).unsqueeze(0).to(self.device)
+            assert state.shape == torch.Size([1, *self.state_size]), f"state shape: {state.shape}"
+            values = self.q_net(state)
+            if logging:
+                print("values", values, flush=True)
+            action = torch.argmax(values, axis=1).item()
+
+        if sample:
+            self.epsilon = max(self.epsilon * self.epsilon_decay_rate, self.epsilon_min)
+            self.current_step += 1
+
         return action
 
-    def update_target_net(self):
-        # Hard update
-        self.target_net.load_state_dict(self.q_net.state_dict())
 
     def save(self):
         torch.save({
-            "q_net": self.q_net.state_dict(), 
+            "q_net": self.q_net.state_dict(),
             "target_net": self.target_net.state_dict(),
             "curr_step": self.current_step
             },
@@ -122,41 +154,49 @@ class DQNAgent:
         )
         if self.current_step % 1000 == 0:
             torch.save({
-                "q_net": self.q_net.state_dict(), 
+                "q_net": self.q_net.state_dict(),
                 "target_net": self.target_net.state_dict(),
                 "curr_step": self.current_step
                 },
                 os.path.join(self.save_dir,f"ckpt_copy.pt")
             )
-        
-    def load(self, ckpt_name=None):
-        if ckpt_name is None:
-            ckpt_name = sorted(os.listdir(self.save_dir))[-1]
-        state_dict = torch.load(os.path.join(self.save_dir, ckpt_name))
+
+    def load(self, load_dir=None, ckpt_name="ckpt.pt"):
+        if load_dir is None:
+            load_dir = self.save_dir
+        state_dict = torch.load(os.path.join(load_dir, ckpt_name))
         self.q_net.load_state_dict(state_dict["q_net"])
         self.target_net.load_state_dict(state_dict["target_net"])
         self.current_step = state_dict["curr_step"]
 
 
     def train(self):
-        if len(self.replay_buffer) < self.batch_size:
+        
+        if self.current_step % self.sync_interval == 0:
+            # Hard update
+            self.target_net.load_state_dict(self.q_net.state_dict())
+        
+        if self.current_step < self.warmup_steps: #self.batch_size:
             return np.NaN, np.NaN
-            
-        self.current_step += 1
+
         if self.current_step % self.learn_interval != 0:
             return np.NaN, np.NaN
-        
+
         batch = self.replay_buffer.sample(self.batch_size).to(self.device)
         batched_state, batched_action, batched_reward, batched_next_state, batched_done \
             = batch["state"], batch["action"], batch["reward"], batch["next_state"], batch["done"]
         # for key in batch.keys():
         #     print(f"{key}: {batch[key].shape}", flush=True)
-        
-        # Double DQN        
-        with torch.no_grad():
-            next_actions = self.q_net(batched_next_state).argmax(dim=1, keepdim=True)
-            next_q_values = self.target_net(batched_next_state).gather(1, next_actions)
-            batched_y = batched_reward + ((1 - batched_done.float()) * self.gamma * next_q_values).float()
+
+        # Double DQN
+        if self.is_doubleDQN:
+            with torch.no_grad():
+                next_actions = self.q_net(batched_next_state).argmax(dim=1, keepdim=True)
+                next_q_values = self.target_net(batched_next_state).gather(1, next_actions)
+                batched_y = batched_reward + ((1 - batched_done.float()) * self.gamma * next_q_values).float()
+        else:
+            outputs = self.target_net(batched_next_state).detach()
+            batched_y = batched_reward + (1 - batched_done.float()) * self.gamma * torch.max(outputs, dim=1)[0].unsqueeze(1)
 
         batched_q = self.q_net(batched_state).gather(1, batched_action)
 
@@ -164,20 +204,20 @@ class DQNAgent:
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        
-        if self.current_step % self.sync_interval == 0:
-            self.update_target_net()
+
         # if self.current_step % self.save_interval == 0:
         #     self.save()
 
         return batched_q.mean().item(), loss.item()
 
 
-def train(env, agent, 
-        epsilon=1, epsilon_decay_rate=0.99999975, epsilon_min=0.001,
-        start_episode=0, num_episodes=40000):
-    
-    epsilon *= (epsilon_decay_rate ** start_episode)
+def train(env, agent, start_episode=0, num_episodes=40000, start_epsilon=None):
+
+    if start_epsilon is None:
+        agent.epsilon = max(agent.epsilon * (agent.epsilon_decay_rate ** agent.current_step), agent.epsilon_min)
+    else:
+        agent.epsilon = start_epsilon
+    print("Starting from epsilon: ", agent.epsilon, flush=True)
     reward_history = []
 
     for episode in tqdm(range(start_episode, num_episodes)):
@@ -189,10 +229,7 @@ def train(env, agent,
         print()
 
         while not done:
-            if np.random.random() < epsilon:
-                action = agent.get_action(state, deterministic=False)
-            else:
-                action = agent.get_action(state, deterministic=True)
+            action = agent.get_action(state, sample=True)
             next_state, reward, done, info = env.step(action)
             agent.add_to_buffer(state, action, reward, next_state, done)
             q_avg, loss = agent.train()
@@ -201,23 +238,24 @@ def train(env, agent,
             step += 1
             if done:
                 break
-            
+
             print(f"\rStep: {step}, Total reward: {total_reward}; Average Q: {q_avg:.2f}, Loss: {loss:.2f}", end="", flush=True)
             losses.append(loss)
-        
-        print(f"\rEpisode {episode}, Reward: {total_reward}, Step: {step}, Epsilon: {epsilon}")
+
+        print(f"\rEpisode {episode}, Reward: {total_reward}, Step: {step}, Epsilon: {agent.epsilon}")
         print(f"Average Q: {q_avg:.2f}, Loss: {np.mean(losses):.2f}", flush=True)
-        
-        epsilon = max(epsilon * epsilon_decay_rate, epsilon_min)
 
         reward_history.append(total_reward)
         agent.save()
-        
+
         if (episode + 1) % 10 == 0:
             plt.plot(reward_history)
+            plt.plot(np.convolve(reward_history, np.ones(10)/10, mode='valid'))
+            plt.title("Reward History")
+            plt.xlabel("Episode")
+            plt.ylabel("Total Reward")
             plt.savefig(os.path.join(agent.save_dir, "history.png"))
             plt.close()
-
 
 if __name__=="__main__":
     env = gym_super_mario_bros.make("SuperMarioBros-v0")
@@ -230,17 +268,45 @@ if __name__=="__main__":
     # Ref.: https://www.gymlibrary.dev/api/wrappers/#available-wrappers
     env = GrayScaleObservation(env)
     env = ResizeObservation(env, shape=img_shape)
+    env = NormalizeObservation(env)
+    env = SkipFrame(env, n_skip=n_skip)
     env = FrameStack(env, num_stack=n_stack)
-    env = SkipFrameObservation(env, n_skip=n_skip)
-    
+
     state_size = env.observation_space.shape
     print("state_size", state_size) # (4, 84, 84)
     action_size = env.action_space.n
     print("action_size", action_size, flush=True)
-    
+
     # agent = DQNAgent(state_size=state_size, action_size=action_size, save_dir="tmp")
     # train(env, agent, epsilon=0.9, epsilon_decay_rate=0.999, epsilon_min=0.001)
+
+    # agent = DQNAgent(state_size=state_size, action_size=action_size, save_dir="new3")
+    # train(env, agent, epsilon=1, epsilon_decay_rate=0.999975, epsilon_min=0.001)
+
+    # agent = DQNAgent(state_size=state_size, action_size=action_size, save_dir="new4",
+    #         epsilon=1, epsilon_decay_rate=0.99999975, epsilon_min=0.001)
+    # agent.load(load_dir="new4")
+    # train(env, agent, start_episode=672)
+
+    # agent = DQNAgent(state_size=state_size, action_size=action_size, save_dir="new5",
+    #         gamma=0.9, batch_size=32, buffer_capacity=100000, learning_rate=2.5e-4,
+    #         learn_interval=1, sync_interval=10000, is_doubleDQN=True,
+    #         epsilon=1, epsilon_decay_rate=0.99999975, epsilon_min=0.001)
+    # agent.load(load_dir="new5")
+    # train(env, agent, start_episode=386, num_episodes=40000)
+
+    # agent = DQNAgent(state_size=state_size, action_size=action_size, save_dir="new6",
+    #         gamma=0.9, batch_size=32, buffer_capacity=100000, learning_rate=2.5e-4,
+    #         learn_interval=1, sync_interval=10000, is_doubleDQN=True,
+    #         epsilon=1, epsilon_decay_rate=0.999975, epsilon_min=0.001)
+    # agent.load(load_dir="new6")
+    # train(env, agent, start_episode=78, num_episodes=40000, \
+    #     start_epsilon=0.08155315353159051)
     
-    agent = DQNAgent(state_size=state_size, action_size=action_size, save_dir="new3")
-    train(env, agent, epsilon=1, epsilon_decay_rate=0.999975, epsilon_min=0.001)
+    agent = DQNAgent(state_size=state_size, action_size=action_size, save_dir="new7",
+                warmup_steps=10000, gamma=0.95,
+                epsilon=1, epsilon_decay_rate=0.9999975, epsilon_min=0.001)
+    train(env, agent)
+
+
     
