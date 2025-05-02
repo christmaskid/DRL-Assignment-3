@@ -49,8 +49,7 @@ class Agent(object):
 
     def _get_stacked_state(self):
         # skip and stack
-        # stacked = np.stack(self.frames[-n_skip*n_stack::n_skip], axis=0)  # (4, 84, 84)
-        stacked = np.stack(self.frames[-n_skip*(n_stack-1)-1::n_skip] + [self.frames[-1]], 0)[:-n_stack]
+        stacked = np.stack(self.frames[-n_skip*(n_stack-1)-1::n_skip])
         stacked = stacked[..., np.newaxis]  # (4, 84, 84, 1)
         return stacked
 
@@ -71,8 +70,6 @@ class Agent(object):
             self.repeat -= 1
             return self.last_action
 
-        print()
-
         if random.random() < 0:
             action = self.action_space.sample()
         else:
@@ -83,35 +80,3 @@ class Agent(object):
         self.last_action = action
         self.repeat = n_skip - 1
         return action
-
-    def act2(self, obs):
-        action = self.agent.get_action(obs, sample=False, logging=False)
-        return action
-"""
-    def act(self, observation):
-        obs = np.array(observation, dtype=np.float32)
-        obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
-        obs = cv2.resize(obs, img_size)
-        obs /= 255.0
-
-        if len(self.frames) == 0:
-            self.frames = [obs.copy()] * (n_stack * n_skip)
-        else:
-            self.frames.append(obs)
-            if len(self.frames) > n_stack * n_skip:
-                self.frames.pop(0)
-
-        # Skip frame extraction
-        if len(self.frames) >= n_stack * n_skip:
-            stacked = np.stack(self.frames[::n_skip], axis=0)
-        else:
-            stacked = np.stack([obs] * n_stack, axis=0)
-
-        # inference noise
-        if random.random() < 0.001:
-            action = self.action_space.sample()
-        else:
-            action = agent.get_action(stacked, sample=False, logging=False)
-
-        return action
-"""
