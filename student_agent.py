@@ -70,7 +70,7 @@ class Agent(object):
             self.repeat -= 1
             return self.last_action
 
-        if random.random() < 0:
+        if random.random() < 0.001:
             action = self.action_space.sample()
         else:
             stacked_state = self._get_stacked_state()
