@@ -11,21 +11,7 @@ import random
 n_skip, n_stack = 4, 4
 img_size = (84, 84)
 state_size = (n_stack, *img_size) #env.observation_space.shape
-print("state_size", state_size) # (4, 84, 84)
 action_size = 12 #env.action_space.n
-print("action size: ", action_size)
-
-
-# state_dict = torch.load("mario_net_1.chkpt")["model"]
-# new_state_dict = {}
-# for key in state_dict.keys():
-#     if "online" in key:
-#         new_key = key.replace("online.", "")
-#         if new_key.split(".")[0] in ["0", "1", "2", "3", "4"]:
-#             new_state_dict["cnn."+new_key] = state_dict[key]
-#         elif new_key.split(".")[0] in ["7", "9"]:
-#             new_state_dict["fc."+str(eval(new_key.split(".")[0])-7)+"."+new_key.split(".")[1]] = state_dict[key]
-# agent.q_net.load_state_dict(new_state_dict)
 
 # Do not modify the input of the 'act' function and the '__init__' function. 
 
@@ -34,11 +20,11 @@ class Agent(object):
         self.action_space = gym.spaces.Discrete(action_size)
 
         self.frames = []
-        self.repeat = 0 #n_skip-1
+        self.repeat = 0
         self.last_action = 0
 
         self.agent = DQNAgent(state_size=state_size, action_size=action_size, device="cpu")
-        self.agent.load(load_dir="new7", ckpt_name="ckpt.pt")
+        self.agent.load(load_dir="new8_2", ckpt_name="ckpt.pt")
         self.agent.q_net.eval()
 
     @staticmethod
@@ -52,6 +38,10 @@ class Agent(object):
         stacked = np.stack(self.frames[-n_skip*(n_stack-1)-1::n_skip])
         stacked = stacked[..., np.newaxis]  # (4, 84, 84, 1)
         return stacked
+
+    def act2(self, observation):
+        action = self.agent.get_action(observation, sample=False)
+        return action
 
     def act(self, observation):
         obs = np.array(observation, dtype=np.float32)
@@ -70,7 +60,7 @@ class Agent(object):
             self.repeat -= 1
             return self.last_action
 
-        if random.random() < 0.001:
+        if random.random() < 0: #.001:
             action = self.action_space.sample()
         else:
             stacked_state = self._get_stacked_state()
