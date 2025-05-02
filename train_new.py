@@ -165,10 +165,14 @@ class DQNAgent:
         if load_dir is None:
             load_dir = self.save_dir
         state_dict = torch.load(os.path.join(load_dir, ckpt_name))
-        self.q_net.load_state_dict(state_dict["q_net"])
-        self.target_net.load_state_dict(state_dict["target_net"])
-        self.current_step = state_dict["curr_step"]
 
+        if self.device == "cpu":
+            self.q_net.load_state_dict(torch.load(state_dict["q_net"], map_location=torch.device('cpu')))
+            self.target_net.load_state_dict(torch.load(state_dict["target_net"], map_location=torch.device('cpu')))
+        else:
+            self.q_net.load_state_dict(torch.load(state_dict["q_net"], weights_only=True))
+            self.target_net.load_state_dict(torch.load(state_dict["target_net"], weights_only=True))
+        self.current_step = state_dict["curr_step"]
 
     def train(self):
         
