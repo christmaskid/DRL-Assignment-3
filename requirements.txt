@@ -8,3 +8,5 @@ gym_super_mario_bros
 opencv-contrib-python
 torchrl
 tensordict
+tqdm
+matplotlib
