@@ -5,7 +5,7 @@ from gym_super_mario_bros.actions import COMPLEX_MOVEMENT
 import cv2
 import numpy as np
 import torch
-from train_new import DQNAgent, QNet
+from train_new_stage_eps import DQNAgent, QNet
 import random
 
 n_skip, n_stack = 4, 4
@@ -24,7 +24,7 @@ class Agent(object):
         self.last_action = 0
 
         self.agent = DQNAgent(state_size=state_size, action_size=action_size, device="cpu")
-        self.agent.load(load_dir="new8_2", ckpt_name="ckpt_7402.pt")
+        self.agent.load(load_dir="new8_2", ckpt_name="ckpt_7508.pt")
         self.agent.q_net.eval()
 
     @staticmethod
