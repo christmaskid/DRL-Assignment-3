@@ -39,9 +39,9 @@ class Agent(object):
         stacked = stacked[..., np.newaxis]  # (4, 84, 84, 1)
         return stacked
 
-    def act2(self, observation):
-        action = self.agent.get_action(observation, sample=False)
-        return action
+    # def act2(self, observation):
+    #     action = self.agent.get_action(observation, sample=False)
+    #     return action
 
     def act(self, observation):
         obs = np.array(observation, dtype=np.float32)
