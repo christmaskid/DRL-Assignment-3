@@ -24,7 +24,7 @@ class Agent(object):
         self.last_action = 0
 
         self.agent = DQNAgent(state_size=state_size, action_size=action_size, device="cpu")
-        self.agent.load(load_dir="new8_2", ckpt_name="ckpt_6836.pt")
+        self.agent.load(load_dir="new8_2", ckpt_name="ckpt_7402.pt")
         self.agent.q_net.eval()
 
     @staticmethod
